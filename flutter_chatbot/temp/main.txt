@@ -1,0 +1,49 @@
+// --- START OF FILE main.dart ---
+
+import 'package:flutter/material.dart';
+import 'package:flutter_chatbot/core/app_theme.dart';
+import 'package:flutter_chatbot/presentation/providers/theme_provider.dart'; // --- NEW: Import theme provider
+import 'package:flutter_chatbot/presentation/screens/chat_screen.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_quill/flutter_quill.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+
+void main() {
+  runApp(
+    const ProviderScope(
+      child: MyApp(),
+    ),
+  );
+}
+
+// --- MODIFIED: Convert to ConsumerWidget to listen for theme changes ---
+class MyApp extends ConsumerWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // --- NEW: Watch the theme provider ---
+    final themeMode = ref.watch(themeProvider);
+
+    return MaterialApp(
+      title: 'Daily Bot',
+      localizationsDelegates: const [
+        FlutterQuillLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('en'),
+      ],
+      // --- THEME IMPLEMENTATION ---
+      theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
+      themeMode: themeMode, // --- MODIFIED: Use the state from the provider
+      // --- END THEME IMPLEMENTATION ---
+      debugShowCheckedModeBanner: false,
+      home: const ChatScreen(),
+    );
+  }
+}
+// --- END OF FILE main.dart ---

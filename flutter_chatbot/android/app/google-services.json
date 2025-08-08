@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "697952138131",
+    "project_id": "dailybot-c7c9d",
+    "storage_bucket": "dailybot-c7c9d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:697952138131:android:07c930bab19b29ddf86e66",
+        "android_client_info": {
+          "package_name": "com.example.flutter_chatbot"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCsKIh3MxaantbC2uo2GU8m-q5BUjxZ4Co"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

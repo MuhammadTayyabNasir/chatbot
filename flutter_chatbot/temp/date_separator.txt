@@ -1,0 +1,29 @@
+import 'package:flutter/material.dart';
+import '../../core/date_formatter.dart';
+
+class DateSeparator extends StatelessWidget {
+  final DateTime date;
+  const DateSeparator({super.key, required this.date});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 12.0),
+        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+        decoration: BoxDecoration(
+          color: Theme.of(context).dividerColor,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          formatDisplayDate(date), // Format the DateTime to a string here
+          style: TextStyle(
+            color: Theme.of(context).textTheme.bodySmall?.color,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
+        ),
+      ),
+    );
+  }
+}

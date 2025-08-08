@@ -1,0 +1,511 @@
+// --- START OF FILE chat_provider.dart ---
+
+import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
+import 'package:audioplayers/audioplayers.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
+import '../../data/models/message.dart';
+import '../../data/models/off_day.dart';
+import '../../data/models/past_response.dart';
+import '../../data/models/user.dart';
+import '../../data/models/weekend_day.dart';
+import '../../data/services/api_service.dart';
+import '../../data/services/mock_socket_service.dart';
+import '../../core/date_formatter.dart';
+import 'package:path/path.dart' as p;
+import 'package:url_launcher/url_launcher.dart';
+import 'package:open_filex/open_filex.dart';
+import 'platform_specific/file_handler_interface.dart';
+
+class AudioPlayerState {
+  final bool isPlaying;
+  final Duration position;
+  final Duration duration;
+  final String? messageId;
+  final PlayerState playerState;
+
+  const AudioPlayerState({
+    this.isPlaying = false,
+    this.position = Duration.zero,
+    this.duration = Duration.zero,
+    this.messageId,
+    this.playerState = PlayerState.stopped,
+  });
+
+  AudioPlayerState copyWith({
+    bool? isPlaying,
+    Duration? position,
+    Duration? duration,
+    String? messageId,
+    bool? clearMessageId,
+    PlayerState? playerState,
+  }) {
+    return AudioPlayerState(
+      isPlaying: isPlaying ?? this.isPlaying,
+      position: position ?? this.position,
+      duration: duration ?? this.duration,
+      messageId: clearMessageId == true ? null : messageId ?? this.messageId,
+      playerState: playerState ?? this.playerState,
+    );
+  }
+}
+
+class ChatState {
+  final bool isLoading;
+  final Map<DateTime, List<Message>> messagesByDate;
+  final List<PastResponse> rawPastResponses;
+  final List<OffDay> offDays;
+  final List<WeekendDay> weekendDays;
+  final List<User> users;
+  final User? botUser;
+  final User? currentUser;
+  final bool isEditMode;
+  final Message? replyingToMessage;
+  final bool isRecording;
+  final bool isRecordingLocked;
+  final AudioPlayerState audioPlayerState;
+  final bool isInSession;
+  final bool isBotTyping;
+
+  ChatState({
+    this.isBotTyping = false,
+    this.isInSession = false,
+    this.isLoading = true,
+    this.messagesByDate = const {},
+    this.rawPastResponses = const [],
+    this.offDays = const [],
+    this.weekendDays = const [],
+    this.users = const [],
+    this.botUser,
+    this.currentUser,
+    this.isEditMode = false,
+    this.replyingToMessage,
+    this.isRecording = false,
+    this.isRecordingLocked = false,
+    this.audioPlayerState = const AudioPlayerState(),
+  });
+
+  ChatState copyWith({
+    bool? isBotTyping,
+    bool? isInSession,
+    bool? isLoading,
+    Map<DateTime, List<Message>>? messagesByDate,
+    List<PastResponse>? rawPastResponses,
+    List<OffDay>? offDays,
+    List<WeekendDay>? weekendDays,
+    List<User>? users,
+    User? botUser,
+    User? currentUser,
+    bool? isEditMode,
+    Message? replyingToMessage,
+    bool? clearReplyingTo,
+    bool? isRecording,
+    bool? isRecordingLocked,
+    AudioPlayerState? audioPlayerState,
+  }) {
+    return ChatState(
+      isBotTyping: isBotTyping ?? this.isBotTyping,
+      isInSession: isInSession ?? this.isInSession,
+      isLoading: isLoading ?? this.isLoading,
+      messagesByDate: messagesByDate ?? this.messagesByDate,
+      rawPastResponses: rawPastResponses ?? this.rawPastResponses,
+      offDays: offDays ?? this.offDays,
+      weekendDays: weekendDays ?? this.weekendDays,
+      users: users ?? this.users,
+      botUser: botUser ?? this.botUser,
+      currentUser: currentUser ?? this.currentUser,
+      isEditMode: isEditMode ?? this.isEditMode,
+      replyingToMessage: clearReplyingTo == true
+          ? null
+          : replyingToMessage ?? this.replyingToMessage,
+      isRecording: isRecording ?? this.isRecording,
+      isRecordingLocked: isRecordingLocked ?? this.isRecordingLocked,
+      audioPlayerState: audioPlayerState ?? this.audioPlayerState,
+    );
+  }
+}
+
+class ChatNotifier extends StateNotifier<ChatState> {
+  final ApiService _apiService;
+  final MockSocketService _socketService;
+  StreamSubscription? _socketSubscription;
+  StreamSubscription? _typingSubscription;
+  final _uuid = const Uuid();
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AudioPlayer _audioPlayer = AudioPlayer();
+
+  StreamSubscription? _playerStateSubscription;
+  StreamSubscription? _positionSubscription;
+  StreamSubscription? _durationSubscription;
+
+  void Function()? onNewMessageArrived;
+  void Function(Message)? onBotMessageArrived;
+
+  ChatNotifier(this._apiService, this._socketService) : super(ChatState()) {
+    _initialize();
+    _initAudioListeners();
+  }
+
+  void _initAudioListeners() {
+    _audioPlayer.setReleaseMode(ReleaseMode.stop);
+
+    _playerStateSubscription =
+        _audioPlayer.onPlayerStateChanged.listen((pState) {
+          if (!mounted) return;
+          state = state.copyWith(
+            audioPlayerState: state.audioPlayerState.copyWith(
+              isPlaying: pState == PlayerState.playing,
+              playerState: pState,
+            ),
+          );
+          if (pState == PlayerState.completed) {
+            state = state.copyWith(
+              audioPlayerState: state.audioPlayerState.copyWith(
+                position: Duration.zero,
+                clearMessageId: true,
+              ),
+            );
+          }
+        });
+
+    _positionSubscription = _audioPlayer.onPositionChanged.listen((pos) {
+      if (!mounted) return;
+      state = state.copyWith(
+        audioPlayerState: state.audioPlayerState.copyWith(position: pos),
+      );
+    });
+
+    _durationSubscription = _audioPlayer.onDurationChanged.listen((dur) {
+      if (!mounted) return;
+      state = state.copyWith(
+        audioPlayerState: state.audioPlayerState.copyWith(duration: dur),
+      );
+    });
+  }
+
+  Future<void> playAudio(Message message) async {
+    final attachment = message.attachment;
+    if (attachment == null) return;
+    Source? source;
+    if (kIsWeb) {
+      if (attachment.url != null) source = UrlSource(attachment.url!);
+    } else {
+      if (attachment.path != null) source = DeviceFileSource(attachment.path!);
+    }
+    if (source == null) return;
+
+    if (state.audioPlayerState.messageId == message.id &&
+        _audioPlayer.state == PlayerState.playing) {
+      await pauseAudio();
+      return;
+    }
+
+    if (state.audioPlayerState.messageId == message.id &&
+        _audioPlayer.state == PlayerState.paused) {
+      await _audioPlayer.resume();
+      return;
+    }
+
+    try {
+      await _audioPlayer.play(source);
+      state = state.copyWith(
+          audioPlayerState:
+          state.audioPlayerState.copyWith(messageId: message.id));
+    } catch (e) {
+      debugPrint("Error playing audio: $e");
+    }
+  }
+
+  Future<void> pauseAudio() async => await _audioPlayer.pause();
+  Future<void> seekAudio(Duration position) async =>
+      await _audioPlayer.seek(position);
+
+  Future<void> pickAndSendFile() async {
+    try {
+      FilePickerResult? result =
+      await FilePicker.platform.pickFiles(withData: kIsWeb);
+      if (result != null) {
+        final file = result.files.single;
+        MessageAttachment attachment;
+        if (kIsWeb) {
+          if (file.bytes == null) return;
+          attachment = MessageAttachment(
+              fileName: file.name,
+              fileSize: file.size.toDouble(),
+              bytes: file.bytes);
+        } else {
+          attachment = MessageAttachment(
+              fileName: p.basename(file.path!),
+              fileSize: file.size.toDouble(),
+              path: file.path!);
+        }
+        sendMessage(text: '', attachment: attachment);
+      }
+    } catch (e) {
+      debugPrint("Error picking file: $e");
+    }
+  }
+
+  Future<void> openAttachment(MessageAttachment attachment) async {
+    try {
+      if (kIsWeb) {
+        if (attachment.bytes != null) {
+          createAndDownloadFile(attachment.fileName, attachment.bytes!);
+        }
+      } else {
+        if (attachment.path != null) {
+          await OpenFilex.open(attachment.path!);
+        }
+      }
+    } catch (e) {
+      debugPrint("Error opening attachment: $e");
+    }
+  }
+
+  Future<void> startRecording() async {
+    try {
+      String path = '';
+      if (!kIsWeb) {
+        if (!await _audioRecorder.hasPermission()) return;
+        final tempDir = await getTemporaryDirectory();
+        path = p.join(tempDir.path, '${_uuid.v4()}.m4a');
+      }
+      await _audioRecorder.start(
+          const RecordConfig(encoder: AudioEncoder.aacLc),
+          path: path);
+      if (await _audioRecorder.isRecording()) {
+        state = state.copyWith(isRecording: true, isRecordingLocked: false);
+      }
+    } catch (e) {
+      debugPrint("Error starting recording: $e");
+      state = state.copyWith(isRecording: false, isRecordingLocked: false);
+    }
+  }
+
+  void lockRecording() {
+    if (state.isRecording) {
+      state = state.copyWith(isRecordingLocked: true);
+    }
+  }
+
+  Future<void> stopRecording() async {
+    if (!await _audioRecorder.isRecording()) return;
+    try {
+      final pathOrUrl = await _audioRecorder.stop();
+      state = state.copyWith(isRecording: false, isRecordingLocked: false);
+      if (pathOrUrl != null) {
+        final tempPlayer = AudioPlayer();
+        Duration? duration;
+        try {
+          if (kIsWeb) {
+            await tempPlayer.setSourceUrl(pathOrUrl);
+          } else {
+            await tempPlayer.setSourceDeviceFile(pathOrUrl);
+          }
+          duration = await tempPlayer.getDuration();
+        } finally {
+          await tempPlayer.dispose();
+        }
+        final file = MessageAttachment(
+          fileName: "Voice Message",
+          path: kIsWeb ? null : pathOrUrl,
+          url: kIsWeb ? pathOrUrl : null,
+          duration: duration,
+        );
+        sendMessage(text: '', attachment: file);
+      }
+    } catch (e) {
+      debugPrint("Error stopping recording: $e");
+      state = state.copyWith(isRecording: false, isRecordingLocked: false);
+    }
+  }
+
+  Future<void> cancelRecording() async {
+    if (await _audioRecorder.isRecording()) {
+      await _audioRecorder.stop();
+    }
+    state = state.copyWith(isRecording: false, isRecordingLocked: false);
+  }
+
+  void registerCallbacks(
+      {required void Function() onNewMessage,
+        required void Function(Message) onBotMessage}) {
+    onNewMessageArrived = onNewMessage;
+    onBotMessageArrived = onBotMessage;
+  }
+
+  Future<void> _initialize() async {
+    await _loadInitialData();
+    _socketService.connect();
+    _socketService.init();
+    _socketSubscription = _socketService.messages.listen(_onNewSocketMessage);
+    _typingSubscription =
+        _socketService.typingState.listen(_onTypingStateChanged);
+  }
+
+  void _onTypingStateChanged(bool isTyping) {
+    if (!mounted) return;
+    state = state.copyWith(isBotTyping: isTyping);
+    if (isTyping) onNewMessageArrived?.call();
+  }
+
+  Future<void> _loadInitialData() async {
+    try {
+      state = state.copyWith(isLoading: true);
+      final results = await Future.wait([
+        _apiService.fetchPastResponses(),
+        _apiService.fetchOffDays(),
+        _apiService.fetchWeekendDays(),
+        _apiService.fetchUsers(),
+      ]);
+      final responses = results[0] as List<PastResponse>;
+      final offDaysData = results[1] as List<OffDay>;
+      final weekendDaysData = results[2] as List<WeekendDay>;
+      final usersData = results[3] as List<User>;
+      final bot = usersData.firstWhere((u) => u.name == 'DailyBot');
+      final human = usersData.firstWhere((u) => u.name != 'DailyBot');
+      final allMessages = <Message>[];
+      for (var response in responses) {
+        for (var entry in response.entries) {
+          allMessages.add(Message(
+              id: _uuid.v4(),
+              text: entry.question,
+              timestamp: entry.questionTimestamp,
+              type: MessageType.bot));
+          allMessages.add(Message(
+              id: _uuid.v4(),
+              text: entry.answer,
+              timestamp: entry.answerTimestamp,
+              type: MessageType.user));
+        }
+      }
+      allMessages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      state = state.copyWith(
+        isLoading: false,
+        rawPastResponses: responses,
+        offDays: offDaysData,
+        weekendDays: weekendDaysData,
+        users: usersData,
+        botUser: bot,
+        currentUser: human,
+        messagesByDate: _groupMessages(allMessages),
+      );
+    } catch (e) {
+      debugPrint("Error loading initial data: $e");
+      state = state.copyWith(isLoading: false);
+    }
+  }
+
+  void _onNewSocketMessage(Message newMessage) {
+    _addMessage(newMessage);
+    state = state.copyWith(
+      isEditMode: _socketService.isEditing,
+      isInSession: _socketService.isInStandup || _socketService.isEditing,
+    );
+    onNewMessageArrived?.call();
+    if (newMessage.type == MessageType.bot) {
+      onBotMessageArrived?.call(newMessage);
+    }
+  }
+
+  void _addUserMessage(Message message) {
+    _addMessage(message);
+    state = state.copyWith(clearReplyingTo: true);
+    onNewMessageArrived?.call();
+  }
+
+  void sendMessage(
+      {required String text,
+        String? richTextJson,
+        MessageAttachment? attachment}) {
+    final trimmedText = text.trim().toLowerCase();
+    if (trimmedText == 'standup' ||
+        trimmedText == 'ready' ||
+        trimmedText == 'checkin edit' ||
+        trimmedText == 'help') {
+      _socketService.send(text);
+      return;
+    }
+    if (state.isEditMode ||
+        _socketService.isEditing ||
+        _socketService.isInStandup) {
+      _socketService.send(text);
+      return;
+    }
+    final newMessage = Message(
+      id: _uuid.v4(),
+      text: text,
+      richTextJson: richTextJson,
+      timestamp: DateTime.now(),
+      type: MessageType.user,
+      repliedTo: state.replyingToMessage,
+      attachment: attachment,
+    );
+    _addUserMessage(newMessage);
+    _socketService.send(text);
+  }
+
+  void startReplying(Message message) =>
+      state = state.copyWith(replyingToMessage: message);
+  void cancelReplying() => state = state.copyWith(clearReplyingTo: true);
+
+  Map<DateTime, List<Message>> _groupMessages(List<Message> messages) {
+    final groups = <DateTime, List<Message>>{};
+    for (var msg in messages) {
+      final date =
+      DateTime(msg.timestamp.year, msg.timestamp.month, msg.timestamp.day);
+      if (!groups.containsKey(date)) {
+        groups[date] = [];
+      }
+      groups[date]!.add(msg);
+    }
+    return Map.fromEntries(
+        groups.entries.toList()..sort((a, b) => a.key.compareTo(b.key)));
+  }
+
+  void _addMessage(Message message) {
+    final currentGroups = Map<DateTime, List<Message>>.from(state.messagesByDate);
+    final dateKey = DateTime(
+        message.timestamp.year, message.timestamp.month, message.timestamp.day);
+    currentGroups.update(
+      dateKey,
+          (list) =>
+      [...list, message]..sort((a, b) => a.timestamp.compareTo(b.timestamp)),
+      ifAbsent: () => [message],
+    );
+    state = state.copyWith(messagesByDate: currentGroups);
+  }
+
+  @override
+  void dispose() {
+    _audioRecorder.dispose();
+    _socketSubscription?.cancel();
+    _typingSubscription?.cancel();
+    _socketService.dispose();
+    _audioPlayer.dispose();
+    _playerStateSubscription?.cancel();
+    _positionSubscription?.cancel();
+    _durationSubscription?.cancel();
+    super.dispose();
+  }
+}
+
+final apiServiceProvider = Provider((ref) => ApiService());
+final mockSocketProvider = Provider((ref) {
+  final socket = MockSocketService();
+  ref.onDispose(socket.dispose);
+  return socket;
+});
+final chatProvider = StateNotifierProvider<ChatNotifier, ChatState>((ref) {
+  return ChatNotifier(
+    ref.watch(apiServiceProvider),
+    ref.watch(mockSocketProvider),
+  );
+});
+
+// --- END OF FILE chat_provider.dart ---

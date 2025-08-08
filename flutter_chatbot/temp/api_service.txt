@@ -1,0 +1,69 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '../../core/constants.dart';
+import '../models/off_day.dart';
+import '../models/past_response.dart';
+import '../models/question.dart';
+import '../models/user.dart';
+import '../models/weekend_day.dart';
+
+class ApiService {
+  final String _baseUrl = kBaseUrl;
+
+  Future<List<T>> _fetchData<T>(String endpoint, T Function(Map<String, dynamic>) fromJson) async {
+    try {
+      final response = await http.get(Uri.parse('$_baseUrl/$endpoint'));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = json.decode(response.body);
+        return data.map((json) => fromJson(json as Map<String, dynamic>)).toList();
+      } else {
+        throw Exception('Failed to load $endpoint. Status code: ${response.statusCode}');
+      }
+    } catch (e) {
+      // Re-throw with more context for easier debugging
+      throw Exception('Error fetching $endpoint: $e');
+    }
+  }
+
+  Future<List<User>> fetchUsers() async {
+    return _fetchData('users', (json) => User.fromJson(json));
+  }
+
+  Future<List<PastResponse>> fetchPastResponses() async {
+    return _fetchData('pastResponses', (json) => PastResponse.fromJson(json));
+  }
+
+  Future<List<Question>> fetchQuestions() async {
+    return _fetchData('questions', (json) => Question.fromJson(json));
+  }
+
+  Future<List<OffDay>> fetchOffDays() async {
+    return _fetchData('offDays', (json) => OffDay.fromJson(json));
+  }
+
+  Future<List<WeekendDay>> fetchWeekendDays() async {
+    return _fetchData('weekendDays', (json) => WeekendDay.fromJson(json));
+  }
+
+  Future<void> updateStandup(String id, Map<String, dynamic> standupData) async {
+    final response = await http.put(
+      Uri.parse('$_baseUrl/pastResponses/$id'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(standupData),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update standup. Status code: ${response.statusCode}');
+    }
+  }
+
+  Future<void> postStandup(Map<String, dynamic> standupData) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/pastResponses'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(standupData),
+    );
+    if (response.statusCode != 201) {
+      throw Exception('Failed to post standup. Status code: ${response.statusCode}');
+    }
+  }
+}

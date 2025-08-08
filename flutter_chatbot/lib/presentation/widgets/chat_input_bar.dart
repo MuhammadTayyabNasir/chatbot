@@ -1,0 +1,587 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'package:flutter/foundation.dart' as foundation;
+import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../providers/chat_provider.dart';
+import '../../data/models/message.dart';
+
+class ChatInputBar extends ConsumerStatefulWidget {
+  const ChatInputBar({super.key});
+
+  @override
+  ChatInputBarState createState() => ChatInputBarState();
+}
+
+class ChatInputBarState extends ConsumerState<ChatInputBar> {
+  final QuillController _controller = QuillController.basic();
+  final FocusNode _focusNode = FocusNode();
+  final GlobalKey _emojiButtonKey = GlobalKey();
+
+  QuillController get quillController => _controller;
+
+  bool _isToolbarVisible = false;
+
+  // --- STATE FOR BOTH PICKER TYPES ---
+  bool _isBottomPickerVisible = false;
+  OverlayEntry? _emojiOverlay;
+  bool get _isPopupPickerVisible => _emojiOverlay != null;
+
+  // Recording gesture state
+  double _micButtonOffset = 0.0;
+  bool _isRecordingLocked = false;
+  Timer? _recordingTimer;
+  Duration _recordingDuration = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(() => mounted ? setState(() {}) : null);
+    _focusNode.addListener(_onFocusChange);
+  }
+
+  @override
+  void dispose() {
+    _removeEmojiPickerPopup(isDisposing: true);
+    _controller.dispose();
+    _focusNode.removeListener(_onFocusChange);
+    _focusNode.dispose();
+    _recordingTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onFocusChange() {
+    // When editor gains focus, hide any open emoji picker
+    if (_focusNode.hasFocus) {
+      if (_isBottomPickerVisible) {
+        setState(() => _isBottomPickerVisible = false);
+      }
+      if (_isPopupPickerVisible) {
+        _removeEmojiPickerPopup();
+      }
+    }
+  }
+
+  void _showEmojiPickerPopup() {
+    _removeEmojiPickerPopup();
+    if (_isBottomPickerVisible) {
+      setState(() => _isBottomPickerVisible = false);
+    }
+    _focusNode.unfocus();
+
+    final overlay = Overlay.of(context)!;
+    final RenderBox renderBox =
+    _emojiButtonKey.currentContext!.findRenderObject() as RenderBox;
+    final size = renderBox.size;
+    final offset = renderBox.localToGlobal(Offset.zero);
+
+    const double popupWidth = 325;
+    const double popupHeight = 400;
+
+    _emojiOverlay = OverlayEntry(
+      builder: (context) => Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: _removeEmojiPickerPopup,
+              behavior: HitTestBehavior.translucent,
+              child: Container(color: Colors.transparent),
+            ),
+          ),
+          Positioned(
+            top: offset.dy - popupHeight - 8, // Position above the button
+            left: offset.dx ,
+            child: Material(
+              elevation: 6,
+              borderRadius: BorderRadius.circular(12),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  width: popupWidth,
+                  height: popupHeight,
+                  child: _buildThemedEmojiPicker(isPopup: true),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    overlay.insert(_emojiOverlay!);
+  }
+
+  void _removeEmojiPickerPopup({bool isDisposing = false}) {
+    _emojiOverlay?.remove();
+    _emojiOverlay = null;
+    if (!isDisposing && mounted) {
+      setState(() {});
+    }
+  }
+
+  void _onEmojiSelected(Emoji emoji, bool isPopup) {
+    final index = _controller.selection.baseOffset;
+    final length = _controller.selection.extentOffset - index;
+    _controller.replaceText(index, length, emoji.emoji, null);
+
+    if (isPopup) {
+      _removeEmojiPickerPopup();
+      _focusNode.requestFocus();
+      _controller.moveCursorToEnd();
+    }
+  }
+
+  void _toggleEmojiPicker() {
+    const double wideLayoutThreshold = 700;
+    final isWide = MediaQuery.of(context).size.width > wideLayoutThreshold;
+
+    _focusNode.unfocus();
+
+    if (isWide) {
+      if (_isPopupPickerVisible) {
+        _removeEmojiPickerPopup();
+      } else {
+        _showEmojiPickerPopup();
+      }
+    } else {
+      // Mobile behavior
+      if (_isPopupPickerVisible) _removeEmojiPickerPopup();
+
+      setState(() {
+        final willBeVisible = !_isBottomPickerVisible;
+        _isBottomPickerVisible = willBeVisible;
+        if (willBeVisible) {
+          _isToolbarVisible = false;
+        }
+      });
+    }
+  }
+
+  void _startTimer() {
+    _recordingTimer?.cancel();
+    _recordingDuration = Duration.zero;
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) { timer.cancel(); return; }
+      setState(() => _recordingDuration = Duration(seconds: timer.tick));
+    });
+  }
+
+  void _stopTimer() {
+    _recordingTimer?.cancel();
+    setState(() => _recordingDuration = Duration.zero);
+  }
+
+  String _formatDuration(Duration d) {
+    String twoDigits(int n) => n.toString().padLeft(2, "0");
+    return "${twoDigits(d.inMinutes.remainder(60))}:${twoDigits(d.inSeconds.remainder(60))}";
+  }
+
+  void _handleLongPressStart(LongPressStartDetails details) {
+    ref.read(chatProvider.notifier).startRecording();
+    _startTimer();
+  }
+
+  void _handleLongPressEnd(LongPressEndDetails details) {
+    final chatNotifier = ref.read(chatProvider.notifier);
+    final isCancelled = _micButtonOffset < -50.0;
+    if (_isRecordingLocked) return;
+    if (isCancelled) {
+      chatNotifier.cancelRecording();
+    } else {
+      chatNotifier.stopRecording();
+    }
+    setState(() => _micButtonOffset = 0.0);
+    _stopTimer();
+  }
+
+  void _handleLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
+    if (_isRecordingLocked) return;
+    setState(() => _micButtonOffset = details.localOffsetFromOrigin.dx);
+    if (details.localOffsetFromOrigin.dy < -50.0) {
+      ref.read(chatProvider.notifier).lockRecording();
+      _stopTimer();
+      _startTimer();
+      setState(() {
+        _isRecordingLocked = true;
+        _micButtonOffset = 0.0;
+      });
+    }
+  }
+
+  void _stopAndSendLockedRecording() {
+    ref.read(chatProvider.notifier).stopRecording();
+    _stopTimer();
+    setState(() => _isRecordingLocked = false);
+  }
+
+  void _cancelLockedRecording() {
+    ref.read(chatProvider.notifier).cancelRecording();
+    _stopTimer();
+    setState(() => _isRecordingLocked = false);
+  }
+
+  void _handleSend() {
+    if (_controller.document.isEmpty()) return;
+    final plainText = _controller.document.toPlainText().trim();
+    final isInSession = ref.read(chatProvider).isInSession;
+    if (plainText.isEmpty && !isInSession) return;
+    final richTextJson = jsonEncode(_controller.document.toDelta().toJson());
+    ref.read(chatProvider.notifier).sendMessage(text: plainText, richTextJson: richTextJson);
+    _controller.clear();
+    _focusNode.requestFocus();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chatState = ref.watch(chatProvider);
+    final replyingTo = chatState.replyingToMessage;
+    final isRecording = chatState.isRecording;
+
+    return Container(
+      color: Theme.of(context).cardColor,
+      child: SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (replyingTo != null) _buildReplyBanner(replyingTo),
+            Stack(
+              children: [
+                LayoutBuilder(builder: (context, constraints) {
+                  const double wideLayoutThreshold = 600;
+                  final bool isWide = constraints.maxWidth > wideLayoutThreshold;
+                  if (!isRecording || !_isRecordingLocked) {
+                    return isWide ? _buildWideLayout() : _buildNarrowLayout();
+                  }
+                  return const SizedBox.shrink();
+                }),
+                if (isRecording) _buildRecordingOverlay(),
+              ],
+            ),
+            _buildBottomEmojiPicker(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- THIS METHOD CONTAINS THE MODIFICATION ---
+  Widget _buildWideLayout() {
+    final theme = Theme.of(context);
+    final isEditorEmpty = _controller.document.isEmpty() || _controller.document.toPlainText().trim().isEmpty;
+
+    return Container(
+      padding: const EdgeInsets.all(8.0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.scaffoldBackgroundColor,
+          border: Border.all(color: theme.dividerColor),
+          borderRadius: BorderRadius.circular(12.0),
+        ),
+        child: Column(
+          children: [
+            // --- MODIFIED: Toolbar is now toggleable ---
+            if (_isToolbarVisible) ...[
+              QuillSimpleToolbar(
+                controller: _controller,
+                config: const QuillSimpleToolbarConfig(
+                  multiRowsDisplay: false,
+                  showBoldButton: true,
+                  showItalicButton: true,
+                  showUnderLineButton: true,
+                  showStrikeThrough: true,
+                  showHeaderStyle: true,
+                  showLink: true,
+                  showListBullets: true,
+                  showListNumbers: true,
+                  showQuote: true,
+                  showCodeBlock: true,
+                  toolbarSize: 36,
+                ),
+              ),
+              const Divider(height: 1),
+            ],
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(child: _buildQuillEditor()),
+                _buildSendOrMicButton(isEditorEmpty),
+              ],
+            ),
+            Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.attach_file),
+                  onPressed: () => ref.read(chatProvider.notifier).pickAndSendFile(),
+                  tooltip: 'Attach File',
+                ),
+                IconButton(
+                  key: _emojiButtonKey,
+                  icon: Icon(Icons.sentiment_satisfied_alt,
+                      color: _isPopupPickerVisible ? theme.primaryColor : null),
+                  onPressed: _toggleEmojiPicker,
+                  tooltip: 'Emoji',
+                ),
+                // --- NEW: Formatting toggle button ---
+                IconButton(
+                  icon: Icon(Icons.text_format,
+                      color: _isToolbarVisible ? theme.primaryColor : null),
+                  onPressed: () => setState(() => _isToolbarVisible = !_isToolbarVisible),
+                  tooltip: 'Toggle Formatting',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNarrowLayout() {
+    final theme = Theme.of(context);
+    final isEditorEmpty = _controller.document.isEmpty() || _controller.document.toPlainText().trim().isEmpty;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 8.0),
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.scaffoldBackgroundColor,
+          border: Border.all(color: theme.dividerColor),
+          borderRadius: BorderRadius.circular(24.0),
+        ),
+        child: Column(
+          children: [
+            if (_isToolbarVisible) ...[
+              QuillSimpleToolbar(
+                controller: _controller,
+                config: const QuillSimpleToolbarConfig(
+                    multiRowsDisplay: false,
+                    showStrikeThrough: true,
+                    showLink: true,
+                    showListBullets: true,
+                    showQuote: true,
+                    toolbarSize: 36),
+              ),
+              const Divider(height: 1),
+            ],
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.add),
+                  onSelected: (value) {
+                    if (value == 'format') {
+                      setState(() => _isToolbarVisible = !_isToolbarVisible);
+                    } else if (value == 'file') {
+                      ref.read(chatProvider.notifier).pickAndSendFile();
+                    }
+                  },
+                  itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                    PopupMenuItem<String>(
+                      value: 'format',
+                      child: Text(_isToolbarVisible ? 'Hide Formatting' : 'Show Formatting'),
+                    ),
+                    const PopupMenuItem<String>(
+                      value: 'file',
+                      child: Text('Attach File'),
+                    ),
+                  ],
+                ),
+                Expanded(child: _buildQuillEditor()),
+                IconButton(
+                  icon: Icon(Icons.sentiment_satisfied_alt,
+                      color: _isBottomPickerVisible ? theme.primaryColor : null),
+                  onPressed: _toggleEmojiPicker,
+                ),
+                _buildSendOrMicButton(isEditorEmpty),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuillEditor() {
+    return QuillEditor.basic(
+      controller: _controller,
+      focusNode: _focusNode,
+      config: QuillEditorConfig(
+        placeholder: 'Type a message...',
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        expands: false,
+        onTapDown: (details, p) {
+          if (_isBottomPickerVisible) setState(() => _isBottomPickerVisible = false);
+          if (_isPopupPickerVisible) _removeEmojiPickerPopup();
+          return false;
+        },
+      ),
+    );
+  }
+
+  Widget _buildSendOrMicButton(bool isEditorEmpty) {
+    if (isEditorEmpty) {
+      return GestureDetector(
+        onLongPressStart: _handleLongPressStart,
+        onLongPressEnd: _handleLongPressEnd,
+        onLongPressMoveUpdate: _handleLongPressMoveUpdate,
+        child: const Padding(
+            padding: EdgeInsets.all(12.0), child: Icon(Icons.mic)),
+      );
+    }
+    return IconButton(
+      icon: Icon(Icons.send, color: Theme.of(context).primaryColor),
+      onPressed: _handleSend,
+    );
+  }
+
+  Widget _buildRecordingOverlay() {
+    final theme = Theme.of(context);
+    if (_isRecordingLocked) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+        height: 56,
+        child: Row(
+          children: [
+            IconButton(icon: Icon(Icons.delete, color: theme.colorScheme.error), onPressed: _cancelLockedRecording),
+            const Icon(Icons.mic, color: Colors.red),
+            const SizedBox(width: 8),
+            Text(_formatDuration(_recordingDuration), style: const TextStyle(fontSize: 16)),
+            const Spacer(),
+            ElevatedButton(
+              onPressed: _stopAndSendLockedRecording,
+              style: ElevatedButton.styleFrom(backgroundColor: theme.primaryColor, shape: const CircleBorder(), padding: const EdgeInsets.all(12)),
+              child: const Icon(Icons.send, color: Colors.white),
+            )
+          ],
+        ),
+      );
+    }
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 100),
+      opacity: ref.watch(chatProvider).isRecording ? 1.0 : 0.0,
+      child: Container(
+        height: 56,
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+        child: Row(
+          children: [
+            const Icon(Icons.mic, color: Colors.red),
+            const SizedBox(width: 8),
+            Text(_formatDuration(_recordingDuration)),
+            const Spacer(),
+            AnimatedOpacity(
+              duration: const Duration(milliseconds: 300),
+              opacity: _micButtonOffset < 0.0 ? 1.0 : 0.0,
+              child: const Text('< Slide to cancel'),
+            ),
+            const SizedBox(width: 10),
+            Transform.translate(offset: Offset(_micButtonOffset, 0), child: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey)),
+            SizedBox(width: 10 + (_micButtonOffset > 0 ? 0 : -_micButtonOffset)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReplyBanner(Message message) {
+    final user = message.type == MessageType.user
+        ? ref.read(chatProvider).currentUser
+        : ref.read(chatProvider).botUser;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).primaryColor.withOpacity(0.1),
+          borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(12), topRight: Radius.circular(12)),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.reply, size: 18, color: Theme.of(context).primaryColor),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(user?.name ?? 'Unknown',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Theme.of(context).primaryColor)),
+                  Text(
+                    message.isAttachmentOnly
+                        ? (message.attachment?.fileName ?? 'Attachment')
+                        : message.text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style:
+                    TextStyle(color: Theme.of(context).textTheme.bodySmall?.color),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+                icon: const Icon(Icons.close, size: 18),
+                onPressed: ref.read(chatProvider.notifier).cancelReplying),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildThemedEmojiPicker(
+      {required bool isPopup, BoxConstraints? constraints}) {
+    final theme = Theme.of(context);
+
+    final bool isVerySmall = (constraints?.maxWidth ?? 400) < 320;
+    final int columns = isVerySmall ? 7 : 8;
+
+    return EmojiPicker(
+      onEmojiSelected: (Category? category, Emoji emoji) =>
+          _onEmojiSelected(emoji, isPopup),
+      config: Config(
+        height: 250,
+        checkPlatformCompatibility: true,
+        emojiViewConfig: EmojiViewConfig(
+          columns: columns,
+          emojiSizeMax: 28 *
+              (foundation.defaultTargetPlatform == TargetPlatform.iOS
+                  ? 1.20
+                  : 1.0),
+          recentsLimit: 28,
+          backgroundColor: theme.scaffoldBackgroundColor,
+        ),
+        categoryViewConfig: CategoryViewConfig(
+          backgroundColor: theme.scaffoldBackgroundColor,
+          indicatorColor: theme.primaryColor,
+          iconColor: Colors.grey,
+          iconColorSelected: theme.primaryColor,
+        ),
+        bottomActionBarConfig: BottomActionBarConfig(
+            backgroundColor: theme.scaffoldBackgroundColor,
+            buttonColor: theme.scaffoldBackgroundColor,
+            buttonIconColor: Colors.grey),
+        searchViewConfig: SearchViewConfig(
+          backgroundColor: theme.scaffoldBackgroundColor,
+          buttonIconColor: theme.primaryColor,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomEmojiPicker() {
+    return Offstage(
+      offstage: !_isBottomPickerVisible,
+      child: SizedBox(
+        height: 250,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return _buildThemedEmojiPicker(
+                isPopup: false, constraints: constraints);
+          },
+        ),
+      ),
+    );
+  }
+}

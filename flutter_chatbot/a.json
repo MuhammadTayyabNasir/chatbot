@@ -1,0 +1,109 @@
+{
+  "offDays": [
+    {
+      "id": "1",
+      "date": "2025-07-27"
+    },
+    {
+      "id": "2",
+      "date": "2025-07-28"
+    },
+    {
+      "id": "3",
+      "date": "2025-08-02"
+    },
+    {
+      "id": "4",
+      "date": "2025-08-03"
+    }
+  ],
+  "weekendDays": [
+    {
+      "id": "1",
+      "day": "Saturday"
+    },
+    {
+      "id": "2",
+      "day": "Sunday"
+    }
+  ],
+  "questions": [
+    {
+      "id": "1",
+      "text": "What did you complete today?"
+    },
+    {
+      "id": "2",
+      "text": "What are you planning to work on next working day?"
+    },
+    {
+      "id": "3",
+      "text": "Is there anything blocking your progress?"
+    },
+    {
+      "id": "4",
+      "text": "Arrival Time?"
+    },
+    {
+      "id": "5",
+      "text": "Departure Time?"
+    }
+  ],
+  "pastResponses": [
+    {
+      "id": "c587",
+      "createdAt": "2025-07-31T12:27:57.382Z",
+      "entries": [
+        {
+          "questionTimestamp": "2025-07-31T12:27:25.285Z",
+          "question": "What did you complete today?",
+          "answerTimestamp": "2025-07-31T12:27:25.285Z",
+          "answer": "socket is integrated."
+        },
+        {
+          "questionTimestamp": "2025-07-31T12:27:34.430Z",
+          "question": "What are you planning to work on next working day?",
+          "answerTimestamp": "2025-07-31T12:27:34.430Z",
+          "answer": "Chat component UI.\nUx Improvement."
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "user_1",
+      "name": "DailyBot",
+      "status": "online",
+      "lastSeen": "2025-02-15T10:30:00Z",
+      "profilePic": "https://picsum.photos/id/237/200/200"
+    },
+    {
+      "id": "user_2",
+      "name": "Sarah Williams",
+      "status": "offline",
+      "lastSeen": "2024-02-14T18:45:00Z",
+      "profilePic": "https://picsum.photos/id/1027/200/200"
+    },
+    {
+      "id": "user_3",
+      "name": "Michael Brown",
+      "status": "online",
+      "lastSeen": "2024-02-15T09:15:00Z",
+      "profilePic": "https://picsum.photos/id/1005/200/200"
+    },
+    {
+      "id": "user_4",
+      "name": "Emily Davis",
+      "status": "offline",
+      "lastSeen": "2024-02-13T22:10:00Z",
+      "profilePic": null
+    },
+    {
+      "id": "user_5",
+      "name": "David Wilson",
+      "status": "online",
+      "lastSeen": "2024-02-15T11:20:00Z",
+      "profilePic": null
+    }
+  ]
+}
